@@ -1,0 +1,7 @@
+{
+    "wait": false, 
+    "bucket": "bucketA",
+    "dir_to_save": "./folder_to_save_from_scanner",
+    "save_as_path": "blahblah_folder/sample_file",
+    "do_not_upload": false
+}
