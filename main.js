@@ -2,54 +2,78 @@ var AWS = require("aws-sdk");
 var fs = require('fs');
 var s3 = new AWS.S3();
 var chokidar = require('chokidar');
+var path = require('path');
+var glob = require('glob');
 
-let config = {
-  content: JSON.parse(fs.readFileSync("./config.json")),
-  get getter() {
-    return this.content;
-  },
-  set setter(obj) {
-    let previous_wait = this.content["wait"];
-    if (previous_wait == true && obj["wait"] == false && config.getter["waiting_item"] != null) {
-      if (!this.content["do_not_upload"]) {
-        console.log("Run upload because we have an waiting item.")
-        upload_to_s3(waiting_item, config.getter["save_as_path"]);
-      } else {
-        console.log("We have an waiting item, but don't have an permisson.")
-      }
-    }
-    this.content = obj;
-    console.log(JSON.stringify(config))
+class State {
+  constructor(folder_watcher, config_watcher, config) {
+    this.folder_watcher = folder_watcher;
+    this.config_watcher = config_watcher;
+    this.config = config;
   }
-}
-console.log(JSON.stringify(config))
+};
 
-chokidar.watch('./config.json').on('change', (_event, _path) => {
-  try {
-    config.setter = JSON.parse(fs.readFileSync("./config.json"))
-  } catch { return }
-  console.log("config changed")
-});
-
-chokidar.watch(config.getter["dir_to_save"]).on('add', (path) => {
-  console.log("file detected")
-  if (config.getter["wait"]) {
-    config.getter["waiting_item"] = path.toString();
-    console.log("add " + config.getter["waiting_item"] + " to waiting item")
+function find_files_on_folder(obj) {
+  files = glob.sync(path.posix.join("./", obj["dir_to_save"], "/*"))
+  if (files.length == 1) {
+    return files[0]
   } else {
-    if (!config.getter["do_not_upload"]) {
-      console.log("Run upload because we found an new item.")
-      upload_to_s3(waiting_item, config.getter["save_as_path"]);
-    } else {
-      console.log("We found an new item, but don't have an permisson.")
-    }
+    return null
   }
 }
-);
 
-function upload_to_s3(source, target) {
+async function make_initial_state() {
+  let config = JSON.parse(fs.readFileSync("./config.json"))
+
+  let config_watcher = chokidar.watch('./config.json');
+
+  config_watcher.on('change', (_event, _path) => {
+    try {
+      config = JSON.parse(fs.readFileSync("./config.json"))
+      state.config = config
+      console.log(state.config)
+      let file = find_files_on_folder(config)
+      if (!file) {
+        return
+      }
+      console.log('file detected ' + file)
+      if (state.config["wait"]) {
+        console.log('waiting')
+      } else {
+        console.log('go upload')
+        upload_to_s3(file, state)
+      }
+    } catch { return }
+  });
+
+  let dir_watcher = chokidar.watch(config["dir_to_save"]);
+
+  dir_watcher.on('add', (path) => {
+    if (state.config["wait"]) {
+      console.log('waiting')
+    } else {
+      console.log('go upload')
+      upload_to_s3(path, state)
+    }
+  });
+
+  let state = new State(dir_watcher, config_watcher, config);
+  console.log(config)
+
+  return state;
+}
+
+let state = make_initial_state()
+
+function upload_to_s3(source, state) {
+  let target = state.config["save_as_path"]
+  target = path.posix.format({
+    dir: path.dirname(target),
+    name: path.basename(target, path.extname(target)),
+    ext: path.extname(source),
+  })
   var params = {
-    Bucket: config.getter["bucket"],
+    Bucket: state.config["bucket"],
     Key: target,
     StorageClass: "INTELLIGENT_TIERING",
     Tagging: ''
@@ -58,7 +82,9 @@ function upload_to_s3(source, target) {
     try {
       var v = fs.readFileSync(source);
       break;
-    } catch { }
+    } catch(err) {
+      console.log(err)
+    }
   }
   params.Body = v;
   s3.putObject(params, (err, data) => {
